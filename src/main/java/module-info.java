@@ -7,6 +7,8 @@ open module com.sanctionco.jmail {
   requires java.naming;
 
   exports com.sanctionco.jmail;
+  exports com.sanctionco.jmail.disposable;
   exports com.sanctionco.jmail.dns;
   exports com.sanctionco.jmail.net;
+  exports com.sanctionco.jmail.normalization;
 }

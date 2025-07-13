@@ -2,6 +2,9 @@ package com.sanctionco.jmail;
 
 import java.util.stream.Stream;
 
+import nl.jqno.equalsverifier.EqualsVerifier;
+
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -40,7 +43,7 @@ class FailureReasonTest {
             FailureReason.LOCAL_PART_TOO_LONG),
         Arguments.of("Abc.example.com", FailureReason.MISSING_AT_SYMBOL),
         Arguments.of("\"test\rblah\"@test.org", FailureReason.MISSING_BACKSLASH_ESCAPE),
-        Arguments.of("test@test.(comment)", FailureReason.MISSING_TOP_LEVEL_DOMAIN),
+        Arguments.of("test@test.(comment)", FailureReason.MISSING_FINAL_DOMAIN_PART),
         Arguments.of("A@b@c@example.com", FailureReason.MULTIPLE_AT_SYMBOLS),
         Arguments.of("test..mytest@test.com", FailureReason.MULTIPLE_DOT_SEPARATORS),
         Arguments.of(null, FailureReason.NULL_ADDRESS),
@@ -59,5 +62,10 @@ class FailureReasonTest {
 
     assertThat(result.isFailure()).isTrue();
     assertThat(result.getFailureReason()).isEqualTo(failureReason);
+  }
+
+  @Test
+  void ensureEqualsContract() {
+    EqualsVerifier.forClass(FailureReason.class).verify();
   }
 }

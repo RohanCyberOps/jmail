@@ -9,6 +9,9 @@
 <a href="https://codecov.io/gh/RohanNagar/jmail">
   <img src="https://codecov.io/gh/RohanNagar/jmail/branch/master/graph/badge.svg" alt="Coverage Status">
 </a>
+<a href="https://search.maven.org/artifact/com.sanctionco.jmail/jmail">
+  <img src="https://img.shields.io/badge/monthly_downloads-110%2C503-green" alt="Monthly Downloads">
+</a>
 
 A modern, fast, zero-dependency library for working with email addresses
 and performing email address validation in Java.
@@ -33,10 +36,10 @@ following reasons:
    email address! It clearly is not, as it has two `@` characters. JMail correctly
    considers this address invalid. You can
    [see a full comparison of correctness and try it out for yourself online](https://www.rohannagar.com/jmail/).
-   
+
 2. JMail is **_faster_** than other libraries by, on average, at least
    2x, thanks in part to lack of regex.
-   
+
 3. JMail has **_zero dependencies_** and is very lightweight.
 
 4. JMail is **_modern_**. It is built for Java 8+, and provides many
@@ -62,21 +65,21 @@ Add this library as a dependency in your `pom.xml`:
 <dependency>
   <groupId>com.sanctionco.jmail</groupId>
   <artifactId>jmail</artifactId>
-  <version>1.6.2</version>
+  <version>2.0.2</version>
 </dependency>
 ```
 
 Or in your `build.gradle`:
 
 ```groovy
-implementation 'com.sanctionco.jmail:jmail:1.6.2'
+implementation 'com.sanctionco.jmail:jmail:2.0.2'
 ```
 
 ## Usage
 
 ### Standard Email Validation
 
-To perform standard email validation, use the static methods
+To perform standard, RFC-compliant email validation, you can use the static methods
 available in `JMail`. For example, to test validation:
 
 ```java
@@ -130,7 +133,8 @@ EmailValidator validator = JMail.strictValidator()
     // Require that the top-level-domain is ".com"
     .requireOnlyTopLevelDomains(TopLevelDomain.DOT_COM)
     // Require that the local-part starts with "allowed"
-    .withRule(email -> email.localPart().startsWith("allowed"));
+    .withRule(email -> email.localPart().startsWith("allowed"),
+            new FailureReason("DOES_NOT_START_WITH_ALLOWED"));
 
 boolean valid = validator.isValid("allowed-email@test.com");
 boolean invalidWithoutTld = validator.isValid("allowed@test");
@@ -190,10 +194,10 @@ JMail.tryParse("test@example.com")
         () -> log.error("Could not send email to invalid email"));
 ```
 
-#### Get a normalized version of the email address
+#### Get different versions of the email address
 
 ```java
-// Get a normalized email address without any comments
+// Get a normalized email address
 Optional<String> normalized = JMail.tryParse("admin(comment)@mysite.org")
     .map(Email::normalized);
 
@@ -201,16 +205,39 @@ Optional<String> normalized = JMail.tryParse("admin(comment)@mysite.org")
 ```
 
 ```java
-// Get a normalized email address and strip quotes if the address would
-// still be valid
-Optional<String> normalized = JMail.tryParse("\"test.1\"@mysite.org")
-        .map(e -> e.normalized(true));
+// Get a normalized email address and remove any sub-addressing when normalizing
+Optional<String> normalized = JMail.tryParse("test.1+mytag@mysite.org")
+        .map(e -> e.normalized(
+            NormalizationOptions.builder()
+                    .removeSubAddress()
+                    .build()));
 
 // normalized == Optional.of("test.1@mysite.org")
 ```
 
-> **Note:** You can also set the `-Djmail.normalize.strip.quotes=true` JVM property to
-strip quotes when calling `normalized()` without parameters.
+```java
+// Get a reference (MD5 hash) of the email address
+Optional<String> reference = JMail.tryParse("test@gmail.com")
+        .map(Email::reference);
+
+// redacted == Optional.of("1aedb8d9dc4751e229a335e371db8058");
+```
+
+```java
+// Get a redacted version of the email address
+Optional<String> redacted = JMail.tryParse("test@gmail.com")
+        .map(Email::redacted);
+
+// redacted == Optional.of("{a94a8fe5ccb19ba61c4c0873d391e987982fbbd3}@gmail.com");
+```
+
+```java
+// Get a munged version of the email address
+Optional<String> redacted = JMail.tryParse("test@gmail.com")
+        .map(Email::munged);
+
+// redacted == Optional.of("te*****@gm*****");
+```
 
 ### Additional Validation Rules
 
@@ -250,6 +277,18 @@ JMail.validator().disallowExplicitSourceRouting();
 ```
 
 > Note: `JMail.strictValidator()` includes this rule automatically.
+
+#### Disallow Single Character Top Level Domains
+
+A common user error is single-character top level domains (such as accidentally typing
+`test@test.c` instead of `test@test.com`). These single character TLDs don't actually exist
+and are not resolvable.
+
+You can require that addresses do not have these single-character TLDs:
+
+```java
+JMail.validator().disallowSingleCharacterTopLevelDomains();
+```
 
 #### Disallow Reserved Domains
 
@@ -312,6 +351,37 @@ JMail.validator().requireValidMXRecord();
 JMail.validator().requireValidMXRecord(50, 2);
 ```
 
+#### Disallow Disposable Domains
+
+There are many services that provide disposable (or temporary) email addresses. Many applications
+want to block these email addresses since they tend to be used by bots or users who are not serious
+about signing up.
+
+You can require that your `EmailValidator` reject all email addresses that have a disposable domain.
+
+You must provide a `DisposableDomainSource` that is able to determine what domains are considered disposable.
+
+Currently, there are two provided `DisposableDomainSource` implementations:
+
+1. `DisposableDomainSource.file(String path)` uses a provided file containing disposable domains as the source. The file could
+   be taken from [disposable-email-domains(https://github.com/disposable-email-domains/disposable-email-domains) for example, and
+   included in your application.
+2. `DisposableDomainSource.isTempMailAPI(String apiKey)` uses the [IsTempMail API](https://www.istempmail.com) to determine which
+   domains are disposable. To use this source, you must sign up with IsTempMail and get an API key for usage.
+
+> **Please note that using the IsTempMailAPI source for this rule on your email validator can increase the
+amount of time it takes to validate email addresses. This is due to the time taken to make the API requests.**
+
+```java
+// Using a FileSource
+DisposableDomainSource fileSource = DisposableDomainSource.file("path/to/my/file.txt");
+JMail.validator().disallowDisposableDomains(fileSource);
+
+// Using a IsTempMailAPISource
+DisposableDomainSource apiSource = DisposableDomainSource.isTempMailAPI("MY_API_KEY");
+JMail.validator().disallowDisposableDomains(apiSource);
+```
+
 #### Require the address to be ASCII
 
 Some older email servers cannot yet accept non-ASCII email addresses. You can
@@ -320,6 +390,17 @@ other than ASCII characters.
 
 ```java
 JMail.validator().requireAscii();
+```
+
+#### Allow Nonstandard Dots in the Local-Part
+
+While technically disallowed under published RFCs, some email providers (ex: GMail)
+consider email addresses that have local-parts that start with or end with a dot `.` character
+as valid. For example, GMail considers `.my.email.@gmail.com` valid, even though it is not
+actually valid according to RFC.
+
+```java
+JMail.validator().allowNonstandardDots();
 ```
 
 ### Bonus: IP Address Validation
@@ -376,8 +457,8 @@ Optional<String> validated = InternetProtocolAddress.validate(ipv4);
 
 // The validate() method allows for convenience such as:
 String ip = InternetProtocolAddress
-    .validate("notvalid")
-    .orElse("0.0.0.0");
+        .validate("notvalid")
+        .orElse("0.0.0.0");
 ```
 
 ```java
@@ -387,8 +468,8 @@ Optional<String> validated = InternetProtocolAddress.validate(ipv6);
 
 // The validate() method allows for convenience such as:
 String ip = InternetProtocolAddress
-    .validate("notvalid")
-    .orElse("2001:db8::1234:5678");
+        .validate("notvalid")
+        .orElse("2001:db8::1234:5678");
 ```
 
 ### Contributing

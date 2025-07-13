@@ -94,20 +94,6 @@ public final class JMail {
   }
 
   /**
-   * Determine if the given email address is valid, returning a new {@link EmailValidationResult}
-   * object that contains details on the result of the validation. Use this method if you need to
-   * see the {@link FailureReason} upon validation failure. See {@link #tryParse(String)}
-   * for details on what is required of an email address within basic validation.
-   *
-   * @param email the email address to validate
-   * @return a {@link EmailValidationResult} containing success or failure, along with the parsed
-   *         {@link Email} object if successful, or the {@link FailureReason} if not
-   */
-  public static EmailValidationResult validate(String email) {
-    return validateInternal(email);
-  }
-
-  /**
    * Parse the given email address into a new {@link Email} object. This method does basic
    * validation on the input email address. This method does not claim to be 100%
    * accurate in determining if an email address is valid or invalid due to the
@@ -123,18 +109,48 @@ public final class JMail {
    *         is invalid
    */
   public static Optional<Email> tryParse(String email) {
-    EmailValidationResult result = validateInternal(email);
+    EmailValidationResult result = validate(email);
 
     return result.getEmail();
+  }
+
+  /**
+   * Determine if the given email address is valid, returning a new {@link EmailValidationResult}
+   * object that contains details on the result of the validation. Use this method if you need to
+   * see the {@link FailureReason} upon validation failure. See {@link #tryParse(String)}
+   * for details on what is required of an email address within basic validation.
+   *
+   * @param email the email address to validate
+   * @return a {@link EmailValidationResult} containing success or failure, along with the parsed
+   *         {@link Email} object if successful, or the {@link FailureReason} if not
+   */
+  public static EmailValidationResult validate(String email) {
+    return validateInternal(email, false);
+  }
+
+  /**
+   * Package-private validate method that exposes an additional option {@code allowNonstandardDots}.
+   *
+   * @param email the email address to parse and validate
+   * @param allowNonstandardDots true if a leading or trailing dot in the local-part should be
+   *                             allowed
+   * @return a {@link EmailValidationResult} containing success or failure, along with the parsed
+   *         {@link Email} object if successful, or the {@link FailureReason} if not
+   */
+  static EmailValidationResult validate(String email, boolean allowNonstandardDots) {
+    return validateInternal(email, allowNonstandardDots);
   }
 
   /**
    * Internal parsing method.
    *
    * @param email the email address to parse
+   * @param allowNonstandardDots true if a leading or trailing dot in the local-part should be
+   *                             allowed
    * @return a new {@link Email} instance if valid, empty if invalid
    */
-  private static EmailValidationResult validateInternal(String email) {
+  private static EmailValidationResult validateInternal(String email,
+                                                        boolean allowNonstandardDots) {
     // email cannot be null
     if (email == null) return EmailValidationResult.failure(FailureReason.NULL_ADDRESS);
 
@@ -160,15 +176,18 @@ public final class JMail {
       fullSourceRoute = detail.fullRoute.toString();
 
       email = email.substring(fullSourceRoute.length());
+
+      // If the actual email is empty then the source route was valid but
+      // the entire address just ended with a : character
+      if (email.isEmpty()) {
+        return EmailValidationResult.failure(FailureReason.BEGINS_WITH_AT_SYMBOL);
+      }
     }
 
     int size = email.length();
 
     // email cannot be more than 320 chars
     if (size > 320) return EmailValidationResult.failure(FailureReason.ADDRESS_TOO_LONG);
-
-    // email cannot start with '.'
-    if (email.charAt(0) == '.') return EmailValidationResult.failure(FailureReason.STARTS_WITH_DOT);
 
     // email cannot end with '.'
     if (email.charAt(size - 1) == '.') {
@@ -180,6 +199,7 @@ public final class JMail {
       return EmailValidationResult.failure(FailureReason.DOMAIN_PART_ENDS_WITH_DASH);
     }
 
+    boolean startsWithDot = false;         // set to true if we start with a dot
     boolean atFound = false;               // set to true when the '@' character is found
     boolean inQuotes = false;              // set to true if we are currently within quotes
     boolean previousDot = false;           // set to true if the previous character is '.'
@@ -196,7 +216,7 @@ public final class JMail {
 
     boolean removableQuotePair = true;     // set to false if the current quote could not be removed
     boolean previousQuotedDot = false;     // set to true if the previous character is '.' in quotes
-    boolean requireQuotedAtOrDot = false;  // set to true if we need an @ or . for a removable quote
+    boolean requireQuotedDot = false;      // set to true if we need a . for a removable quote
 
     StringBuilder localPart = new StringBuilder(size);
     StringBuilder localPartWithoutComments = new StringBuilder(size);
@@ -217,13 +237,22 @@ public final class JMail {
 
       if (c >= 128) isAscii = false;
 
+      if (i == 0 && c == '.' && !allowNonstandardDots) {
+        // email cannot start with '.'
+        // unless we are configured to allow it (GMail doesn't care about a starting dot)
+        // we set a flag instead of immediately invalidating the address since it could
+        // start with a dot as part of the identifier
+        startsWithDot = true;
+      }
+
       if (c == '<' && !inQuotes && !previousBackslash) {
         // could be "phrase <address>" format. If not, it's not allowed
         if (!(email.charAt(size - 1) == '>')) {
           return EmailValidationResult.failure(FailureReason.UNQUOTED_ANGLED_BRACKET);
         }
 
-        EmailValidationResult innerResult = validateInternal(email.substring(i + 1, size - 1));
+        EmailValidationResult innerResult
+            = validateInternal(email.substring(i + 1, size - 1), allowNonstandardDots);
 
         // If the address passed validation, return success with the identifier included.
         // Otherwise, just return the failed internal result
@@ -278,7 +307,7 @@ public final class JMail {
       if (whitespace) {
         // Whitespace is allowed if it is between parts
         if (!previousDot && !previousComment) {
-          if (c != '.' && c != '@' && c != '(' && !isWhitespace(c)) {
+          if (c != '.' && c != '(' && !isWhitespace(c)) {
             if (!atFound) requireAngledBracket = true; // or in phrase <addr> format
             else return EmailValidationResult.failure(FailureReason.INVALID_WHITESPACE);
           }
@@ -286,11 +315,11 @@ public final class JMail {
       }
 
       // Additional logic to check if the current quote could be removable
-      if (requireQuotedAtOrDot && inQuotes) {
-        if (c != '.' && c != '@' && !isWhitespace(c) && c != '"') {
+      if (requireQuotedDot && inQuotes) {
+        if (c != '.' && !isWhitespace(c) && c != '"') {
           removableQuotePair = false;
         } else if (!isWhitespace(c) && c != '"') {
-          requireQuotedAtOrDot = false;
+          requireQuotedDot = false;
         }
       }
 
@@ -396,11 +425,20 @@ public final class JMail {
         }
       } else {
         // We're in the domain
+
+        // Once we make it to the domain, there is no longer a chance of the address being in
+        // display-name <addr> format anymore. So, if we saw that we started with a '.' character,
+        // it's time to invalidate the address
+        if (startsWithDot) {
+          return EmailValidationResult.failure(FailureReason.STARTS_WITH_DOT);
+        }
+
         if (firstDomainChar && c == '[') {
           // validate IP address and be done
           String ipDomain = email.substring(i);
 
-          if (!ipDomain.startsWith("[") || !ipDomain.endsWith("]") || ipDomain.length() < 3) {
+          // We already know it starts with a '[', so make sure it ends with a ']'
+          if (!ipDomain.endsWith("]") || ipDomain.length() < 3) {
             return EmailValidationResult.failure(FailureReason.INVALID_IP_DOMAIN);
           }
 
@@ -491,7 +529,7 @@ public final class JMail {
       // if this quote would be removable
       if (quotedWhitespace) {
         if (!previousQuotedDot && !previousBackslash) {
-          requireQuotedAtOrDot = true;
+          requireQuotedDot = true;
         }
       }
 
@@ -512,12 +550,20 @@ public final class JMail {
 
     // Check that local-part does not end with '.'
     if (localPart.charAt(localPart.length() - 1) == '.') {
-      return EmailValidationResult.failure(FailureReason.LOCAL_PART_ENDS_WITH_DOT);
+      // unless we are configured to allow it (GMail doesn't care about a trailing dot)
+      if (!allowNonstandardDots) {
+        return EmailValidationResult.failure(FailureReason.LOCAL_PART_ENDS_WITH_DOT);
+      }
+
+      // if we allow a trailing dot, just make sure it's not the only thing in the local-part
+      if (localPartLen <= 1) {
+        return EmailValidationResult.failure(FailureReason.LOCAL_PART_MISSING);
+      }
     }
 
     // Ensure the TLD is not empty or greater than 63 chars
     if (currentDomainPart.length() <= 0) {
-      return EmailValidationResult.failure(FailureReason.MISSING_TOP_LEVEL_DOMAIN);
+      return EmailValidationResult.failure(FailureReason.MISSING_FINAL_DOMAIN_PART);
     }
 
     if (currentDomainPart.length() > 63) {
@@ -531,11 +577,13 @@ public final class JMail {
     }
 
     // Ensure the last domain part (TLD) is not all numeric
-    if (currentDomainPart.toString().chars().allMatch(Character::isDigit)) {
+    String tld = currentDomainPart.toString();
+
+    if (tld.chars().allMatch(Character::isDigit)) {
       return EmailValidationResult.failure(FailureReason.NUMERIC_TLD);
     }
 
-    domainParts.add(currentDomainPart.toString());
+    domainParts.add(tld);
 
     // Validate the characters in the domain if it is not an IP address
     if (!isIpAddress && !isValidIdn(domainWithoutComments.toString())) {
@@ -545,7 +593,7 @@ public final class JMail {
     Email parsed = new Email(
         localPart.toString(), localPartWithoutComments.toString(),
         localPartWithoutQuotes.toString(), domain.toString(), domainWithoutComments.toString(),
-        fullSourceRoute, null, domainParts, comments, sourceRoutes, isIpAddress,
+        fullSourceRoute, domainParts, comments, sourceRoutes, isIpAddress,
         containsWhiteSpace, isAscii);
 
     return EmailValidationResult.success(parsed);
@@ -654,6 +702,9 @@ public final class JMail {
 
     // If we haven't seen the end of the current part, its invalid
     if (currentDomainPart.length() > 0) return Optional.empty();
+
+    // If we haven't seen the end of the current source route, its invalid
+    if (sourceRoute.length() > 0) return Optional.empty();
 
     // If we needed a new domain (last saw a comma), fail
     if (requireNewDomain) return Optional.empty();

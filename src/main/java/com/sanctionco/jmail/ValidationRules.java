@@ -1,5 +1,6 @@
 package com.sanctionco.jmail;
 
+import com.sanctionco.jmail.disposable.DisposableDomainSource;
 import com.sanctionco.jmail.dns.DNSLookupUtil;
 
 import java.util.Arrays;
@@ -48,7 +49,20 @@ public final class ValidationRules {
    * @return true if this email address has a top-level domain, or false if it does not
    */
   public static boolean requireTopLevelDomain(Email email) {
-    return !email.topLevelDomain().equals(TopLevelDomain.NONE);
+    // IP address domains have an inherent top level domain
+    return email.isIpAddress() || !email.topLevelDomain().equals(TopLevelDomain.NONE);
+  }
+
+  /**
+   * Rejects an email address that has a TLD with only one (or zero) character(s). For example,
+   * the address {@code "test@server.c"} would be rejected.
+   *
+   * @param email the email address to validate
+   * @return true if the email address has a TLD with more than one character, or false if not
+   */
+  public static boolean disallowSingleCharacterTopLevelDomains(Email email) {
+    return email.topLevelDomain().equals(TopLevelDomain.NONE)
+        || email.topLevelDomain().stringValue().length() > 1;
   }
 
   /**
@@ -159,6 +173,20 @@ public final class ValidationRules {
    */
   public static boolean requireValidMXRecord(Email email, int initialTimeout, int numRetries) {
     return DNSLookupUtil.hasMXRecord(email.domainWithoutComments(), initialTimeout, numRetries);
+  }
+
+  /**
+   * Rejects an email address that has a disposable domain. The set of disposable domains
+   * is determined by the provided {@link DisposableDomainSource}.
+   *
+   * @param email the email address to validate
+   * @param disposableDomainSource the source of disposable domains
+   * @return true if this email address does not have a disposable domain, or false if it does
+   */
+  public static boolean disallowDisposableDomains(Email email,
+                                                  DisposableDomainSource disposableDomainSource) {
+    return email.isIpAddress()
+        || !disposableDomainSource.isDisposableDomain(email.domainWithoutComments());
   }
 
   /**

@@ -1,5 +1,12 @@
 package com.sanctionco.jmail;
 
+import com.sanctionco.jmail.normalization.CaseOption;
+import com.sanctionco.jmail.normalization.NormalizationOptions;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.text.Normalizer;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -27,7 +34,7 @@ public final class Email {
 
   Email(String localPart, String localPartWithoutComments, String localPartWithoutQuotes,
         String domain, String domainWithoutComments,
-        String fullSourceRoute, String identifier,
+        String fullSourceRoute,
         List<String> domainParts, List<String> comments, List<String> sourceRoutes,
         boolean isIpAddress, boolean containsWhitespace, boolean isAscii) {
     this.localPart = localPart;
@@ -36,14 +43,14 @@ public final class Email {
     this.domain = domain;
     this.domainWithoutComments = domainWithoutComments;
     this.fullSourceRoute = fullSourceRoute;
-    this.identifier = identifier;
     this.domainParts = Collections.unmodifiableList(domainParts);
     this.comments = Collections.unmodifiableList(comments);
     this.sourceRoutes = Collections.unmodifiableList(sourceRoutes);
     this.isIpAddress = isIpAddress;
     this.containsWhitespace = containsWhitespace;
     this.isAscii = isAscii;
-    this.hasIdentifier = identifier != null && identifier.length() > 0;
+    this.identifier = null;
+    this.hasIdentifier = false;
 
     this.tld = domainParts.size() > 1
         ? TopLevelDomain.fromString(domainParts.get(domainParts.size() - 1))
@@ -230,95 +237,224 @@ public final class Email {
   }
 
   /**
-   * Return a "normalized" version of this email address. The normalized version
-   * is the same as the original email address, except that all comments and optional
-   * parts (identifiers, source routing) are removed. For example, the address
-   * {@code "test@(comment)example.com"} will return {@code "test@example.com"}.
+   * <p>Return a "normalized" version of this email address. This method returns a version of the
+   * email address that is the same as the original email address, except:</p>
+   *
+   * <ul>
+   *   <li>All comments are removed</li>
+   *   <li>All identifiers or source routing are removed</li>
+   *   <li>Any unnecessary quotes within the local-part are removed</li>
+   *   <li>The entire address is lowercased</li>
+   * </ul>
+   *
+   * <p>For example, the address {@code "tEST@(comment)example.com"} will return
+   * {@code "test@example.com"}.</p>
+   *
+   * <p>This method uses the default set of {@link NormalizationOptions} when performing
+   * normalization. Use {@link #normalized(NormalizationOptions)} instead of this method
+   * to further customize how normalization behaves.</p>
    *
    * @return the normalized version of this email address
    */
   public String normalized() {
-    return normalized(
-        JmailProperties.stripQuotes(), JmailProperties.lowerCase(), JmailProperties.removeDots());
+    return normalized(NormalizationOptions.DEFAULT_OPTIONS);
   }
 
   /**
-   * Return a "normalized" version of this email address. The normalized version
-   * is the same as the original email address, except that all comments and optional
-   * parts (identifiers, source routing) are removed. For example, the address
-   * {@code "test@(comment)example.com"} will return {@code "test@example.com"}.
+   * <p>Return a "normalized" version of this email address. The actual result of normalization
+   * depends on the configured normalization options, but in general this method returns
+   * a version of the email address that is the same as the original email address, except:</p>
    *
-   * @param stripQuotes set to true if you want to remove all quotes
-   *                    within the local-part of the address
+   * <ul>
+   *   <li>All comments are removed</li>
+   *   <li>All identifiers or source routing are removed</li>
+   *   <li>Any unnecessary quotes within the local-part are removed</li>
+   *   <li>The entire address is lowercased</li>
+   * </ul>
+   *
+   * <p>For example, the address {@code "tEST@(comment)example.com"} will return
+   * {@code "test@example.com"}.</p>
+   *
+   * <p>See {@link NormalizationOptions} for more details on all of the configurable options.</p>
+   *
+   * @param options the {@link NormalizationOptions} to use when normalizing
    * @return the normalized version of this email address
+   * @see NormalizationOptions
    */
-  public String normalized(boolean stripQuotes) {
-    return normalized(stripQuotes, JmailProperties.lowerCase(), JmailProperties.removeDots());
+  public String normalized(NormalizationOptions options) {
+    return normalizedLocalPart(options) + "@" + normalizedDomain(options);
   }
 
   /**
-   * Return a "normalized" version of this email address. The normalized version
-   * is the same as the original email address, except that all comments and optional
-   * parts (identifiers, source routing) are removed. For example, the address
-   * {@code "test@(comment)example.com"} will return {@code "test@example.com"}.
+   * <p>Returns an MD5 reference to the email address. This format can be useful to share references
+   * to the email address without sharing the actual address.</p>
    *
-   * @param stripQuotes set to true if you want to remove all quotes
-   *                    within the local-part of the address
-   * @param lowerCase set to true if you want to convert the address to lowercase characters.
-   *                  Note that you can adjust which part of the address (local-part
-   *                  or domain or both) is lowercased using the system properties
-   *                  {@code jmail.normalize.lower.case.localpart} and
-   *                  {@code jmail.normalize.lower.case.domain}. By default,
-   *                  setting the {@code lowerCase} option to {@code true} will lowercase
-   *                  the entire address (both the local-part and the domain).
-   * @return the normalized version of this email address
+   * <p>The reference is calculated by first performing normalization on the address, and then
+   * taking the MD5 hash of the normalized address. See {@link #normalized()} for more details
+   * on how normalization works.</p>
+   *
+   * <p>This method uses the default {@link NormalizationOptions}. If you wish to customize how the
+   * normalization happens, use {@link #reference(NormalizationOptions)} instead.</p>
+   *
+   * @return the MD5 reference string for the address
+   * @throws NoSuchAlgorithmException if the MD5 algorithm is unable to be loaded
    */
-  public String normalized(boolean stripQuotes, boolean lowerCase) {
-    return normalized(stripQuotes, lowerCase, JmailProperties.removeDots());
+  public String reference() throws NoSuchAlgorithmException {
+    return reference(NormalizationOptions.DEFAULT_OPTIONS);
   }
 
   /**
-   * Return a "normalized" version of this email address. The normalized version
-   * is the same as the original email address, except that all comments and optional
-   * parts (identifiers, source routing) are removed. For example, the address
-   * {@code "test@(comment)example.com"} will return {@code "test@example.com"}.
+   * <p>Returns an MD5 reference to the email address. This format can be useful to share references
+   * to the email address without sharing the actual address.</p>
    *
-   * @param stripQuotes set to true if you want to remove all quotes
-   *                    within the local-part of the address
-   * @param lowerCase set to true if you want to convert the address to lowercase characters.
-   *                  Note that you can adjust which part of the address (local-part
-   *                  or domain or both) is lowercased using the system properties
-   *                  {@code jmail.normalize.lower.case.localpart} and
-   *                  {@code jmail.normalize.lower.case.domain}. By default,
-   *                  setting the {@code lowerCase} option to {@code true} will lowercase
-   *                  the entire address (both the local-part and the domain).
-   * @param removeDots set to true if you want to remove all dots from the local-part of the address
-   * @return the normalized version of this email address
+   * <p>The reference is calculated by first performing normalization on the address, and then
+   * taking the MD5 hash of the normalized address. See {@link #normalized(NormalizationOptions)}
+   * for more details on how normalization works.</p>
+   *
+   * @param options the {@link NormalizationOptions} to use when normalizing
+   * @return the MD5 reference string for the address
+   * @throws NoSuchAlgorithmException if the MD5 algorithm is unable to be loaded
    */
-  public String normalized(boolean stripQuotes, boolean lowerCase, boolean removeDots) {
-    String domain = isIpAddress
-        ? "[" + this.domainWithoutComments + "]"
-        : this.domainWithoutComments;
+  public String reference(NormalizationOptions options) throws NoSuchAlgorithmException {
+    MessageDigest md = MessageDigest.getInstance("MD5");
 
-    String localPart = stripQuotes
+    byte[] normalized = normalized(options).getBytes(StandardCharsets.UTF_8);
+    byte[] digest = md.digest(normalized);
+
+    return toHexString(digest);
+  }
+
+  /**
+   * <p>Returns a redacted version of the email address in the format {@code "{local-part}@domain"}.
+   * This format can be useful when storing addresses in a data store (to avoid storing the original
+   * address).</p>
+   *
+   * <p>The redacted address is calculated by first performing normalization on the address, and
+   * then taking the SHA-1 hash of the local-part of the normalized address to construct the final
+   * redacted version of the address. See {@link #normalized()} for more details on how
+   * normalization works.</p>
+   *
+   * <p>This method uses the default {@link NormalizationOptions}. If you wish to customize how the
+   * normalization happens, use {@link #redacted(NormalizationOptions)} instead.</p>
+   *
+   * @return the redacted version of the email address
+   * @throws NoSuchAlgorithmException if the SHA-A algorithm is unable to be loaded
+   */
+  public String redacted() throws NoSuchAlgorithmException {
+    return redacted(NormalizationOptions.DEFAULT_OPTIONS);
+  }
+
+  /**
+   * <p>Returns a redacted version of the email address in the format {@code "{local-part}@domain"}.
+   * This format can be useful when storing addresses in a data store (to avoid storing the original
+   * address).</p>
+   *
+   * <p>The redacted address is calculated by first performing normalization on the address, and
+   * then taking the SHA-1 hash of the local-part of the normalized address to construct the final
+   * redacted version of the address. See {@link #normalized(NormalizationOptions)} for more
+   * details on how normalization works.</p>
+   *
+   * @param options the {@link NormalizationOptions} to use when normalizing
+   * @return the redacted version of the email address
+   * @throws NoSuchAlgorithmException if the SHA-1 algorithm is unable to be loaded
+   */
+  public String redacted(NormalizationOptions options) throws NoSuchAlgorithmException {
+    MessageDigest md = MessageDigest.getInstance("SHA1");
+
+    byte[] normalizedLocalPart = normalizedLocalPart(options).getBytes(StandardCharsets.UTF_8);
+    byte[] digest = md.digest(normalizedLocalPart);
+
+    return "{" + toHexString(digest) + "}@" + normalizedDomain(options);
+  }
+
+  /**
+   * <p>Returns a munged version of the email address in the format {@code "lo*****@do*****"}.
+   * This format can be useful when displaying addresses on a user account page.
+   *
+   * <p>The munged address is calculated by first performing normalization on the address, and
+   * then taking the first two characters of both the local-part and the domain, and adding
+   * five {@code *} characters to each. See {@link #normalized()} for more
+   * details on how normalization works.</p>
+   *
+   * <p>This method uses the default {@link NormalizationOptions}. If you wish to customize how the
+   * normalization happens, use {@link #munged(NormalizationOptions)} instead.</p>
+   *
+   * @return the munged version of the email address
+   */
+  public String munged() {
+    return munged(NormalizationOptions.DEFAULT_OPTIONS);
+  }
+
+
+  /**
+   * <p>Returns a munged version of the email address in the format {@code "lo*****@do*****"}.
+   * This format can be useful when displaying addresses on a user account page.
+   *
+   * <p>The munged address is calculated by first performing normalization on the address, and
+   * then taking the first two characters of both the local-part and the domain, and adding
+   * five {@code *} characters to each. See {@link #normalized(NormalizationOptions)} for more
+   * details on how normalization works.</p>
+   *
+   * @param options the {@link NormalizationOptions} to use when normalizing
+   * @return the munged version of the email address
+   */
+  public String munged(NormalizationOptions options) {
+    String localPart = normalizedLocalPart(options);
+    localPart = localPart.length() < 2 ? localPart : localPart.substring(0, 2);
+
+    String domain = normalizedDomain(options);
+    domain = domain.length() < 2 ? domain : domain.substring(0, 2);
+
+    return localPart + "*****@" + domain + "*****";
+  }
+
+  private String normalizedLocalPart(NormalizationOptions options) {
+    String localPart = options.shouldStripQuotes()
         ? localPartWithoutQuotes
         : localPartWithoutComments;
 
-    if (lowerCase) {
-      if (JmailProperties.lowerCaseLocalPart()) {
-        localPart = localPart.toLowerCase();
-      }
+    if (options.shouldRemoveSubAddress()) {
+      int separatorIndex = localPart.indexOf(options.getSubAddressSeparator());
 
-      if (JmailProperties.lowerCaseDomain()) {
-        domain = domain.toLowerCase();
+      if (separatorIndex != -1) {
+        localPart = localPart.substring(0, separatorIndex);
       }
     }
 
-    localPart = removeDots
-        ? localPart.replaceAll("(\\.)", "")
-        : localPart;
+    CaseOption caseOption = options.getCaseOption();
 
-    return localPart + "@" + domain;
+    localPart = options.shouldRemoveDots()
+        ? caseOption.adjustLocalPart(localPart.replace(".", ""))
+        : caseOption.adjustLocalPart(localPart);
+
+    if (options.shouldPerformUnicodeNormalization()) {
+      localPart = Normalizer.normalize(localPart, options.getUnicodeNormalizationForm());
+    }
+
+    return localPart;
+  }
+
+  private String normalizedDomain(NormalizationOptions options) {
+    CaseOption caseOption = options.getCaseOption();
+
+    return isIpAddress
+        ? "[" + this.domainWithoutComments + "]"
+        : caseOption.adjustDomain(this.domainWithoutComments);
+  }
+
+  private String toHexString(byte[] bytes) {
+    char[] hexArray = {
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+        'a', 'b', 'c', 'd', 'e', 'f'};
+    char[] hexChars = new char[bytes.length * 2];
+
+    for (int j = 0; j < bytes.length; j++) {
+      int v = bytes[j] & 0xFF;
+      hexChars[j * 2] = hexArray[v / 16];
+      hexChars[j * 2 + 1] = hexArray[v % 16];
+    }
+
+    return new String(hexChars);
   }
 
   /**
